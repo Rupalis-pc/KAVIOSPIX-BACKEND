@@ -6,6 +6,7 @@ const Album = require("../models/album.model");
 const Image = require("../models/image.model");
 const verifyJWT = require("../utils/verifyJWT");
 const cloudinary = require("../utils/cloudinary");
+const streamifier = require("streamifier");
 
 // Multer setup → memoryStorage
 const storage = multer.memoryStorage();
@@ -89,7 +90,7 @@ router.post(
   }
 );
 
-// Star (Favorite) Image
+// Star (Favorite) Image - Mark or unmark an image as favorite
 router.put(
   "/:albumId/images/:imageId/favorite",
   verifyJWT,
@@ -122,12 +123,7 @@ router.put(
       image.isFavorite = isFavorite;
       await image.save();
 
-      res.status(200).json({
-        message: `Image has been ${
-          isFavorite ? "marked as favorite" : "removed from favorites"
-        }`,
-        image,
-      });
+      res.status(200).json({ message: "Favorite status updated", image });
     } catch (error) {
       console.error("Favorite update error:", error);
       res.status(500).json({ message: "Failed to update favorite status" });
@@ -194,7 +190,7 @@ router.delete("/:albumId/images/:imageId", verifyJWT, async (req, res) => {
     const album = await Album.findOne({ albumId });
     if (!album) return res.status(404).json({ message: "Album not found" });
 
-    const image = await Image.findOne({ imageId, albumId });
+    const image = await Image.findOne({ _id: imageId, albumId });
     if (!image) return res.status(404).json({ message: "Image not found" });
 
     // Only owner can delete
@@ -206,11 +202,12 @@ router.delete("/:albumId/images/:imageId", verifyJWT, async (req, res) => {
 
     // Delete image from Cloudinary
     await cloudinary.uploader.destroy(image.name);
-
+    // Delete from database
     await Image.deleteOne({ imageId });
+
     res.json({ message: "Image deleted successfully" });
   } catch (err) {
-    console.error(err);
+    console.error("Delete image error:", err);
     res.status(500).json({ message: "Failed to delete image" });
   }
 });
@@ -235,11 +232,20 @@ router.get("/:albumId/images", verifyJWT, async (req, res) => {
     const access = await checkAlbumAccess(albumId, req.user);
     if (access.error) return res.status(403).json({ message: access.error });
 
-    const images = await Image.find({ albumId }).select(
-      "imageId name tags person isFavorite comments size uploadedAt"
-    );
+    const images = await Image.find({ albumId });
 
-    res.status(200).json(images);
+    const imageData = images.map((image) => {
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+      return {
+        _id: image._id,
+        imageUrl: `https://res.cloudinary.com/${cloudName}/image/upload/${image.name}`,
+        comments: image.comments,
+        isFavorite: image.isFavorite || false,
+        tags: image.tags || [],
+      };
+    });
+
+    res.status(200).json(imageData);
   } catch (error) {
     console.error("Error fetching album images:", error);
     res.status(500).json({ message: "Failed to fetch album images" });
@@ -250,15 +256,34 @@ router.get("/:albumId/images", verifyJWT, async (req, res) => {
 router.get("/:albumId/images/favorites", verifyJWT, async (req, res) => {
   try {
     const { albumId } = req.params;
-    const access = await checkAlbumAccess(albumId, req.user);
-    if (access.error) return res.status(403).json({ message: access.error });
+
+    // Check access permission
+    const album = await Album.findOne({ albumId });
+    if (!album) return res.status(404).json({ message: "Album not found" });
+
+    // Verify access
+    if (
+      album.ownerId !== req.user.userId &&
+      !album.sharedUsers.includes(req.user.email)
+    ) {
+      return res
+        .status(403)
+        .json({ message: "You do not have access to this album" });
+    }
 
     const favoriteImages = await Image.find({
       albumId,
       isFavorite: true,
-    }).select("imageId name tags person isFavorite comments size uploadedAt");
+    });
 
-    res.status(200).json(favoriteImages);
+    const formatted = favoriteImages.map((img) => ({
+      _id: img._id,
+      imageUrl: `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/${img.name}`,
+      comments: img.comments || [],
+      isFavorite: img.isFavorite,
+    }));
+
+    res.status(200).json(formatted);
   } catch (error) {
     console.error("Error fetching favorite images:", error);
     res.status(500).json({ message: "Failed to fetch favorite images" });
@@ -269,7 +294,9 @@ router.get("/:albumId/images/favorites", verifyJWT, async (req, res) => {
 router.get("/:albumId/images/search", verifyJWT, async (req, res) => {
   try {
     const { albumId } = req.params;
-    const { tags } = req.query; // e.g. ?tags=sunset,beach
+    const { tags } = req.query;
+
+    //Check access
     const access = await checkAlbumAccess(albumId, req.user);
     if (access.error) return res.status(403).json({ message: access.error });
 
@@ -283,7 +310,7 @@ router.get("/:albumId/images/search", verifyJWT, async (req, res) => {
     const images = await Image.find({
       albumId,
       tags: { $in: tagList },
-    }).select("imageId name tags person isFavorite comments size uploadedAt");
+    });
 
     res.status(200).json(images);
   } catch (error) {
