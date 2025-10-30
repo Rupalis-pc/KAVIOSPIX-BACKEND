@@ -78,16 +78,7 @@ router.put("/:albumId", verifyJWT, async (req, res) => {
 router.post("/:albumId/share", verifyJWT, async (req, res) => {
   try {
     const { albumId } = req.params;
-    const { email } = req.body; 
-
-     console.log("📤 Share album route hit:", albumId);
-     console.log("📧 Sharing with:", email);
-
-    if (!email || typeof email !== "string") {
-      return res
-        .status(400)
-        .json({ message: "Email is required and must be a string." });
-    }
+    const { email } = req.body;
 
     // Find album
     const album = await Album.findOne({ albumId });
@@ -121,7 +112,7 @@ router.post("/:albumId/share", verifyJWT, async (req, res) => {
       sharedUsers: album.sharedUsers,
     });
   } catch (error) {
-    console.error("Share album error:",error);
+    console.error("Share album error:", error);
     res.status(500).json({ message: "Failed to share album" });
   }
 });
